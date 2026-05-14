@@ -1,0 +1,19 @@
+{
+  "name": "damnzcord-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord pour la création de comptes Damnzcord",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.4",
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.6",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
