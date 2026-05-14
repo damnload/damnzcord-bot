@@ -4,7 +4,7 @@
   "description": "Bot Discord pour la création de comptes Damnzcord",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node server.js",
     "dev": "node --watch index.js"
   },
   "dependencies": {
