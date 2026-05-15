@@ -18,6 +18,14 @@ const io     = new Server(server, {
 const PORT   = process.env.PORT || process.env.API_PORT || 3000;
 const SECRET = process.env.JWT_SECRET || 'changeme';
 
+// Headers CORS manuels — compatibles avec tous les proxies
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.options('/{*path}', cors());
 app.use(express.json());
