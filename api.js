@@ -179,9 +179,8 @@ app.get('/messages/:channelId', authRequired, async (req, res) => {
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
 
-  // Auth via token à la connexion
   const token = socket.handshake.auth?.token;
   const user  = verifyToken(token);
   if (!user) { socket.disconnect(); return; }
@@ -189,9 +188,15 @@ io.on('connection', (socket) => {
   socket.user = user;
   console.log(`[WS] ${user.username} connecté`);
 
+  // Notifie tous les clients qu'un membre vient de se connecter
+  const { data: allMembers } = await supabase
+    .from('users')
+    .select('discord_id, username, avatar_url')
+    .order('username');
+  io.emit('members_update', allMembers || []);
+
   // Rejoindre un channel
   socket.on('join_channel', (channelId) => {
-    // Quitte l'ancien channel
     Object.keys(socket.rooms).forEach(room => {
       if (room !== socket.id) socket.leave(room);
     });
@@ -202,7 +207,6 @@ io.on('connection', (socket) => {
   socket.on('send_message', async ({ channelId, content }) => {
     if (!channelId || !content?.trim()) return;
 
-    // Sauvegarde en base
     const { data } = await supabase
       .from('messages')
       .insert({
@@ -215,13 +219,18 @@ io.on('connection', (socket) => {
       .single();
 
     if (data) {
-      // Diffuse à tous les membres du channel
       io.to(channelId).emit('new_message', data);
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`[WS] ${socket.user?.username} déconnecté`);
+    // Réémet la liste à jour
+    const { data: allMembers } = await supabase
+      .from('users')
+      .select('discord_id, username, avatar_url')
+      .order('username');
+    io.emit('members_update', allMembers || []);
   });
 });
 
