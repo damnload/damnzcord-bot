@@ -534,7 +534,60 @@ io.on('connection', async (socket) => {
     }
   });
 
+  // ── Typing indicator ─────────────────────────────────────────────────────────
+
+  socket.on('typing_start', async ({ channelId, serverId }) => {
+    if (!channelId) return;
+    const roomKey = serverId ? `${serverId}:${channelId}` : String(channelId);
+
+    if (serverId) {
+      const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
+      if (!isMember) return;
+    }
+
+    socket.to(roomKey).emit('typing_start', {
+      discord_id: socket.user.discord_id,
+      username:   socket.user.username,
+      channelId,
+      serverId: serverId || null,
+    });
+
+    // Auto-stop après 4s sans typing_stop
+    if (!socket._typingTimers) socket._typingTimers = {};
+    clearTimeout(socket._typingTimers[roomKey]);
+    socket._typingTimers[roomKey] = setTimeout(() => {
+      socket.to(roomKey).emit('typing_stop', {
+        discord_id: socket.user.discord_id,
+        channelId,
+        serverId: serverId || null,
+      });
+    }, 4000);
+  });
+
+  socket.on('typing_stop', ({ channelId, serverId }) => {
+    if (!channelId) return;
+    const roomKey = serverId ? `${serverId}:${channelId}` : String(channelId);
+    clearTimeout(socket._typingTimers?.[roomKey]);
+    if (socket._typingTimers) delete socket._typingTimers[roomKey];
+    socket.to(roomKey).emit('typing_stop', {
+      discord_id: socket.user.discord_id,
+      channelId,
+      serverId: serverId || null,
+    });
+  });
+
   socket.on('disconnect', async () => {
+    // Stopper tous les typing en cours
+    if (socket._typingTimers) {
+      Object.keys(socket._typingTimers).forEach(roomKey => {
+        clearTimeout(socket._typingTimers[roomKey]);
+        socket.to(roomKey).emit('typing_stop', {
+          discord_id: socket.user.discord_id,
+          channelId: roomKey.includes(':') ? roomKey.split(':')[1] : roomKey,
+          serverId:  roomKey.includes(':') ? parseInt(roomKey.split(':')[0], 10) : null,
+        });
+      });
+    }
     console.log(`[WS] ${socket.user?.username} déconnecté`);
     const { data: allMembers } = await supabase
       .from('users')
