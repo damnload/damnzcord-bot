@@ -18,7 +18,8 @@ const io     = new Server(server, {
 const PORT   = process.env.PORT || process.env.API_PORT || 3000;
 const SECRET = process.env.JWT_SECRET || 'changeme';
 
-app.use(cors());
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.options('*', cors());
 app.use(express.json());
 
 // ─── Serveur par défaut (hardcodé pour l'instant) ─────────────────────────────
