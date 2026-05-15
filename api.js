@@ -26,8 +26,6 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
-app.options('/{*path}', cors());
 app.use(express.json());
 
 // ─── Serveur par défaut (hardcodé pour l'instant) ─────────────────────────────
