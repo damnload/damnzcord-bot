@@ -227,6 +227,16 @@ const stmts = {
     await supabase.from('server_channels').delete().eq('id', id);
   },
 
+  async updateServerChannel(id, updates) {
+    const { data } = await supabase
+      .from('server_channels')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    return data || null;
+  },
+
   // ─── Messages des serveurs ───────────────────────────────────────────────────
 
   async getServerMessages({ server_id, channel_id }) {
