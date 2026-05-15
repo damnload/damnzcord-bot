@@ -8,15 +8,24 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// ─── API identique à avant ────────────────────────────────────────────────────
-
 const stmts = {
+
+  // ─── Utilisateurs ───────────────────────────────────────────────────────────
 
   async findByDiscordId(discord_id) {
     const { data } = await supabase
       .from('users')
       .select('*')
       .eq('discord_id', discord_id)
+      .single();
+    return data || null;
+  },
+
+  async findByUsername(username) {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('username', username)
       .single();
     return data || null;
   },
@@ -65,14 +74,187 @@ const stmts = {
     return { total: count || 0 };
   },
 
-  async findByUsername(username) {
+  // ─── Serveurs ────────────────────────────────────────────────────────────────
+
+  async getUserServers(discord_id) {
     const { data } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('username', username)
+      .from('server_members')
+      .select(`
+        role,
+        servers (
+          id, name, color, invite_code, owner_id, created_at
+        )
+      `)
+      .eq('discord_id', discord_id);
+    if (!data) return [];
+    return data.map(row => ({ ...row.servers, role: row.role }));
+  },
+
+  async createServer({ name, color, invite_code, owner_id }) {
+    const { data } = await supabase
+      .from('servers')
+      .insert({ name, color, invite_code, owner_id })
+      .select()
       .single();
     return data || null;
   },
+
+  async getServerById(id) {
+    const { data } = await supabase
+      .from('servers')
+      .select('*')
+      .eq('id', id)
+      .single();
+    return data || null;
+  },
+
+  async getServerByInviteCode(invite_code) {
+    const { data } = await supabase
+      .from('servers')
+      .select('*')
+      .eq('invite_code', invite_code)
+      .single();
+    return data || null;
+  },
+
+  async updateServer(id, updates) {
+    const { data } = await supabase
+      .from('servers')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServer(id) {
+    await supabase.from('servers').delete().eq('id', id);
+  },
+
+  // ─── Membres des serveurs ────────────────────────────────────────────────────
+
+  async getServerMembers(server_id) {
+    const { data } = await supabase
+      .from('server_members')
+      .select(`
+        discord_id, role, joined_at,
+        users (username, avatar_url)
+      `)
+      .eq('server_id', server_id)
+      .order('joined_at', { ascending: true });
+    if (!data) return [];
+    return data.map(row => ({
+      discord_id: row.discord_id,
+      role:       row.role,
+      joined_at:  row.joined_at,
+      username:   row.users?.username,
+      avatar_url: row.users?.avatar_url,
+    }));
+  },
+
+  async getServerMember({ server_id, discord_id }) {
+    const { data } = await supabase
+      .from('server_members')
+      .select('*')
+      .eq('server_id', server_id)
+      .eq('discord_id', discord_id)
+      .single();
+    return data || null;
+  },
+
+  async isServerMember({ server_id, discord_id }) {
+    const { data } = await supabase
+      .from('server_members')
+      .select('discord_id')
+      .eq('server_id', server_id)
+      .eq('discord_id', discord_id)
+      .single();
+    return !!data;
+  },
+
+  async addServerMember({ server_id, discord_id, role = 'member' }) {
+    await supabase
+      .from('server_members')
+      .insert({ server_id, discord_id, role });
+  },
+
+  async removeServerMember({ server_id, discord_id }) {
+    await supabase
+      .from('server_members')
+      .delete()
+      .eq('server_id', server_id)
+      .eq('discord_id', discord_id);
+  },
+
+  async updateServerMemberRole({ server_id, discord_id, role }) {
+    await supabase
+      .from('server_members')
+      .update({ role })
+      .eq('server_id', server_id)
+      .eq('discord_id', discord_id);
+  },
+
+  // ─── Channels des serveurs ───────────────────────────────────────────────────
+
+  async getServerChannels(server_id) {
+    const { data } = await supabase
+      .from('server_channels')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('position', { ascending: true });
+    return data || [];
+  },
+
+  async getServerChannelById(id) {
+    const { data } = await supabase
+      .from('server_channels')
+      .select('*')
+      .eq('id', id)
+      .single();
+    return data || null;
+  },
+
+  async createServerChannel({ server_id, name, type, category, position }) {
+    const { data } = await supabase
+      .from('server_channels')
+      .insert({ server_id, name, type, category, position })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServerChannel(id) {
+    await supabase.from('server_channels').delete().eq('id', id);
+  },
+
+  // ─── Messages des serveurs ───────────────────────────────────────────────────
+
+  async getServerMessages({ server_id, channel_id }) {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('server_id', server_id)
+      .eq('channel_id', String(channel_id))
+      .order('created_at', { ascending: true })
+      .limit(50);
+    return data || [];
+  },
+
+  async saveServerMessage({ server_id, channel_id, discord_id, username, content }) {
+    const { data } = await supabase
+      .from('messages')
+      .insert({
+        server_id,
+        channel_id: String(channel_id),
+        discord_id,
+        username,
+        content,
+      })
+      .select()
+      .single();
+    return data || null;
+  },
+
 };
 
 module.exports = { supabase, stmts };
