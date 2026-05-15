@@ -352,6 +352,41 @@ app.post('/servers/:id/channels', authRequired, requireMember, requireAdmin, asy
   res.status(201).json(ch);
 });
 
+// POST /servers/:id/channels/reorder — réordonner les channels (admin/owner)
+// Body: [{ id, position, category }]
+app.post('/servers/:id/channels/reorder', authRequired, requireMember, requireAdmin, async (req, res) => {
+  const { order } = req.body; // [{ id: number, position: number, category: string }]
+  if (!Array.isArray(order) || !order.length) {
+    return res.status(400).json({ error: 'Tableau "order" requis.' });
+  }
+
+  // Valider que tous les channels appartiennent bien à ce serveur
+  const existing = await stmts.getServerChannels(req.serverId);
+  const existingIds = new Set(existing.map(c => c.id));
+
+  for (const item of order) {
+    const id = parseInt(item.id, 10);
+    if (isNaN(id) || !existingIds.has(id)) {
+      return res.status(400).json({ error: `Channel ID invalide : ${item.id}` });
+    }
+    if (typeof item.position !== 'number') {
+      return res.status(400).json({ error: 'Position doit être un nombre.' });
+    }
+  }
+
+  // Appliquer les mises à jour
+  for (const item of order) {
+    await stmts.updateServerChannel(parseInt(item.id, 10), {
+      position: item.position,
+      category: item.category?.trim() || 'Général',
+    });
+  }
+
+  const channels = await stmts.getServerChannels(req.serverId);
+  io.to(`server:${req.serverId}`).emit('channels_updated', { server_id: req.serverId, channels });
+  res.json({ success: true });
+});
+
 // DELETE /servers/:id/channels/:channelId — supprimer un channel (admin/owner)
 app.delete('/servers/:id/channels/:channelId', authRequired, requireMember, requireAdmin, async (req, res) => {
   const channelId = parseInt(req.params.channelId, 10);
@@ -466,7 +501,13 @@ io.on('connection', async (socket) => {
 
       const ch = await stmts.getServerChannelById(channelId);
       if (!ch || ch.server_id !== serverId) return;
-      if (ch.type === 'rules' || ch.type === 'announcement') return; // lecture seule
+      // rules = lecture seule pour tous
+      if (ch.type === 'rules') return;
+      // announcement = lecture seule sauf owner/admin
+      if (ch.type === 'announcement') {
+        const member = await stmts.getServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
+        if (!member || !['owner', 'admin'].includes(member.role)) return;
+      }
 
       const msg = await stmts.saveServerMessage({
         server_id:  serverId,
