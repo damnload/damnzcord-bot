@@ -60,6 +60,18 @@ const stmts = {
       .eq('discord_id', discord_id);
   },
 
+  async updateProfile({ discord_id, display_name, nickname, bio, banner_url }) {
+    const updates = {};
+    if (display_name !== undefined) updates.display_name = display_name;
+    if (nickname      !== undefined) updates.nickname      = nickname;
+    if (bio           !== undefined) updates.bio           = bio;
+    if (banner_url    !== undefined) updates.banner_url    = banner_url;
+    await supabase
+      .from('users')
+      .update(updates)
+      .eq('discord_id', discord_id);
+  },
+
   async updateLastLogin({ discord_id }) {
     await supabase
       .from('users')
@@ -138,17 +150,21 @@ const stmts = {
       .from('server_members')
       .select(`
         discord_id, role, joined_at,
-        users (username, avatar_url)
+        users (username, avatar_url, display_name, nickname, bio, banner_url)
       `)
       .eq('server_id', server_id)
       .order('joined_at', { ascending: true });
     if (!data) return [];
     return data.map(row => ({
-      discord_id: row.discord_id,
-      role:       row.role,
-      joined_at:  row.joined_at,
-      username:   row.users?.username,
-      avatar_url: row.users?.avatar_url,
+      discord_id:   row.discord_id,
+      role:         row.role,
+      joined_at:    row.joined_at,
+      username:     row.users?.username,
+      avatar_url:   row.users?.avatar_url,
+      display_name: row.users?.display_name,
+      nickname:     row.users?.nickname,
+      bio:          row.users?.bio,
+      banner_url:   row.users?.banner_url,
     }));
   },
 
