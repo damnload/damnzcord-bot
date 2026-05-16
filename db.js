@@ -255,14 +255,14 @@ const stmts = {
 
   // ─── Messages des serveurs ───────────────────────────────────────────────────
 
-  async getServerMessages({ server_id, channel_id }) {
+  async getServerMessages({ server_id, channel_id, limit = 200 }) {
     const { data } = await supabase
       .from('messages')
       .select('*')
       .eq('server_id', server_id)
       .eq('channel_id', String(channel_id))
       .order('created_at', { ascending: true })
-      .limit(50);
+      .limit(limit);
     return data || [];
   },
 
