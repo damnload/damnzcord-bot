@@ -478,6 +478,30 @@ app.post('/invite/:code', authRequired, async (req, res) => {
   res.json({ success: true, server_id: srv.id });
 });
 
+
+// ─── DM Routes ───────────────────────────────────────────────────────────────
+
+// GET /users/search?q=xxx — recherche d'utilisateurs
+app.get('/users/search', authRequired, async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (!q || q.length < 2) return res.json([]);
+  const users = await stmts.searchUsers(q, req.user.discord_id);
+  res.json(users);
+});
+
+// GET /dm/conversations — liste des conversations DM
+app.get('/dm/conversations', authRequired, async (req, res) => {
+  const convs = await stmts.getDmConversations(req.user.discord_id);
+  res.json(convs);
+});
+
+// GET /dm/:otherDiscordId — historique d'une conversation
+app.get('/dm/:otherDiscordId', authRequired, async (req, res) => {
+  const roomKey = stmts.dmRoomKey(req.user.discord_id, req.params.otherDiscordId);
+  const msgs = await stmts.getDmMessages(roomKey);
+  res.json(msgs);
+});
+
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 
 io.on('connection', async (socket) => {
@@ -627,6 +651,65 @@ io.on('connection', async (socket) => {
       channelId,
       serverId: serverId || null,
     });
+  });
+
+
+  // ── Messages Privés (DM) ─────────────────────────────────────────────────────
+
+  socket.on('join_dm', async ({ otherDiscordId }) => {
+    if (!otherDiscordId) return;
+    const roomKey = stmts.dmRoomKey(socket.user.discord_id, otherDiscordId);
+    // Quitter les rooms DM précédentes
+    Array.from(socket.rooms).forEach(room => {
+      if (room.startsWith('dm:')) socket.leave(room);
+    });
+    socket.join(`dm:${roomKey}`);
+  });
+
+  socket.on('send_dm', async ({ otherDiscordId, content }) => {
+    if (!otherDiscordId || !content?.trim()) return;
+    const roomKey = stmts.dmRoomKey(socket.user.discord_id, otherDiscordId);
+    const msg = await stmts.saveDmMessage({
+      room:       roomKey,
+      discord_id: socket.user.discord_id,
+      username:   socket.user.username,
+      content:    content.trim(),
+    });
+    if (!msg) return;
+    // Émettre aux deux (l'expéditeur aussi pour confirmation)
+    io.to(`dm:${roomKey}`).emit('new_dm', { ...msg, otherDiscordId });
+    // Si le destinataire n'est pas dans la room DM (pas en vue DM),
+    // on lui envoie quand même via son socket personnel
+    const otherSockets = await io.fetchSockets();
+    for (const s of otherSockets) {
+      if (s.user?.discord_id === String(otherDiscordId) && !s.rooms.has(`dm:${roomKey}`)) {
+        s.emit('new_dm', { ...msg, otherDiscordId: socket.user.discord_id });
+      }
+    }
+  });
+
+  socket.on('typing_start_dm', ({ otherDiscordId }) => {
+    if (!otherDiscordId) return;
+    const roomKey = stmts.dmRoomKey(socket.user.discord_id, otherDiscordId);
+    socket.to(`dm:${roomKey}`).emit('typing_start_dm', {
+      discord_id: socket.user.discord_id,
+      username:   socket.user.username,
+    });
+    if (!socket._typingTimers) socket._typingTimers = {};
+    const key = `dm:${roomKey}`;
+    clearTimeout(socket._typingTimers[key]);
+    socket._typingTimers[key] = setTimeout(() => {
+      socket.to(`dm:${roomKey}`).emit('typing_stop_dm', { discord_id: socket.user.discord_id });
+    }, 4000);
+  });
+
+  socket.on('typing_stop_dm', ({ otherDiscordId }) => {
+    if (!otherDiscordId) return;
+    const roomKey = stmts.dmRoomKey(socket.user.discord_id, otherDiscordId);
+    const key = `dm:${roomKey}`;
+    clearTimeout(socket._typingTimers?.[key]);
+    if (socket._typingTimers) delete socket._typingTimers[key];
+    socket.to(`dm:${roomKey}`).emit('typing_stop_dm', { discord_id: socket.user.discord_id });
   });
 
   socket.on('disconnect', async () => {
