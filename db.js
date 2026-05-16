@@ -290,14 +290,16 @@ const stmts = {
 
   // ─── Messages des serveurs ───────────────────────────────────────────────────
 
-  async getServerMessages({ server_id, channel_id, limit = 200 }) {
-    const { data } = await supabase
+  async getServerMessages({ server_id, channel_id, limit = 200, since = null }) {
+    let query = supabase
       .from('messages')
       .select('*')
       .eq('server_id', server_id)
       .eq('channel_id', String(channel_id))
       .order('created_at', { ascending: true })
       .limit(limit);
+    if (since && !isNaN(Number(since))) query = query.gt('id', Number(since));
+    const { data } = await query;
     return data || [];
   },
 
