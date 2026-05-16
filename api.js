@@ -174,6 +174,38 @@ app.post('/update-avatar', authRequired, async (req, res) => {
   res.json({ success: true });
 });
 
+app.post('/update-profile', authRequired, async (req, res) => {
+  const { display_name, nickname, bio, banner_url } = req.body;
+
+  // Validate lengths
+  if (display_name && display_name.length > 32)
+    return res.status(400).json({ error: 'Nom d\'affichage trop long (max 32 car.).' });
+  if (nickname && nickname.length > 32)
+    return res.status(400).json({ error: 'Prénom trop long (max 32 car.).' });
+  if (bio && bio.length > 190)
+    return res.status(400).json({ error: 'Bio trop longue (max 190 car.).' });
+
+  // Validate banner URL if provided
+  if (banner_url) {
+    try {
+      const u = new URL(banner_url);
+      if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+    } catch {
+      return res.status(400).json({ error: 'URL de bannière invalide.' });
+    }
+  }
+
+  await stmts.updateProfile({
+    discord_id:   req.user.discord_id,
+    display_name: display_name || null,
+    nickname:     nickname     || null,
+    bio:          bio          || null,
+    banner_url:   banner_url   || null,
+  });
+
+  res.json({ success: true });
+});
+
 // ─── Serveur par défaut ──────────────────────────────────────────────────────
 
 app.get('/server', authRequired, (req, res) => {
@@ -183,7 +215,7 @@ app.get('/server', authRequired, (req, res) => {
 app.get('/members', authRequired, async (req, res) => {
   const { data } = await supabase
     .from('users')
-    .select('discord_id, username, avatar_url')
+    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
     .order('username');
   res.json(data || []);
 });
