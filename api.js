@@ -11,7 +11,7 @@ const { verifyPassword, hashPassword } = require('./passwords');
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] }
+  cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'] }
 });
 
 const PORT   = process.env.PORT || process.env.API_PORT || 3000;
@@ -20,7 +20,7 @@ const SECRET = process.env.JWT_SECRET || 'changeme';
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
@@ -64,7 +64,12 @@ function groupChannels(channels) {
   const map = {};
   channels.forEach(ch => {
     if (!map[ch.category]) map[ch.category] = [];
-    map[ch.category].push({ id: ch.id, name: ch.name, type: ch.type });
+    map[ch.category].push({
+      id:    ch.id,
+      name:  ch.name,
+      type:  ch.type,
+      topic: ch.topic || null,
+    });
   });
   return Object.entries(map).map(([name, chs]) => ({ name, channels: chs }));
 }
@@ -175,17 +180,17 @@ app.post('/update-avatar', authRequired, async (req, res) => {
 });
 
 app.post('/update-profile', authRequired, async (req, res) => {
-  const { display_name, nickname, bio, banner_url } = req.body;
+  const { display_name, nickname, bio, banner_url, status_text } = req.body;
 
-  // Validate lengths
   if (display_name && display_name.length > 32)
     return res.status(400).json({ error: 'Nom d\'affichage trop long (max 32 car.).' });
   if (nickname && nickname.length > 32)
     return res.status(400).json({ error: 'Prénom trop long (max 32 car.).' });
   if (bio && bio.length > 190)
     return res.status(400).json({ error: 'Bio trop longue (max 190 car.).' });
+  if (status_text && status_text.length > 60)
+    return res.status(400).json({ error: 'Statut trop long (max 60 car.).' });
 
-  // Validate banner URL if provided
   if (banner_url) {
     try {
       const u = new URL(banner_url);
@@ -197,11 +202,21 @@ app.post('/update-profile', authRequired, async (req, res) => {
 
   await stmts.updateProfile({
     discord_id:   req.user.discord_id,
-    display_name: display_name || null,
-    nickname:     nickname     || null,
-    bio:          bio          || null,
-    banner_url:   banner_url   || null,
+    display_name: display_name !== undefined ? (display_name || null) : undefined,
+    nickname:     nickname     !== undefined ? (nickname     || null) : undefined,
+    bio:          bio          !== undefined ? (bio          || null) : undefined,
+    banner_url:   banner_url   !== undefined ? (banner_url   || null) : undefined,
+    status_text:  status_text  !== undefined ? (status_text  || null) : undefined,
   });
+
+  // Notifier les membres connectés si statut changé
+  if (status_text !== undefined) {
+    const { data: allMembers } = await supabase
+      .from('users')
+      .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, status_text, created_at')
+      .order('username');
+    io.emit('members_update', allMembers || []);
+  }
 
   res.json({ success: true });
 });
@@ -215,7 +230,7 @@ app.get('/server', authRequired, (req, res) => {
 app.get('/members', authRequired, async (req, res) => {
   const { data } = await supabase
     .from('users')
-    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
+    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, status_text, created_at')
     .order('username');
   res.json(data || []);
 });
@@ -246,7 +261,6 @@ app.post('/servers', authRequired, async (req, res) => {
   if (!name?.trim()) return res.status(400).json({ error: 'Nom du serveur requis.' });
   if (name.trim().length > 50) return res.status(400).json({ error: 'Nom trop long (50 caractères max).' });
 
-  // Générer un code d'invitation unique
   let invite_code;
   let attempts = 0;
   do {
@@ -264,10 +278,8 @@ app.post('/servers', authRequired, async (req, res) => {
   });
   if (!srv) return res.status(500).json({ error: 'Erreur lors de la création du serveur.' });
 
-  // Ajouter le créateur comme owner
   await stmts.addServerMember({ server_id: srv.id, discord_id: req.user.discord_id, role: 'owner' });
 
-  // Créer les channels par défaut
   const defaultChannels = [
     { name: 'règlement',  type: 'rules',        category: 'Infos',   position: 0 },
     { name: 'annonces',   type: 'announcement', category: 'Infos',   position: 1 },
@@ -291,6 +303,9 @@ app.get('/servers/:id', authRequired, requireMember, async (req, res) => {
     id:          srv.id,
     name:        srv.name,
     color:       srv.color,
+    icon_url:    srv.icon_url    || null,
+    banner_url:  srv.banner_url  || null,
+    description: srv.description || null,
     invite_code: srv.invite_code,
     owner_id:    srv.owner_id,
     categories,
@@ -309,7 +324,6 @@ app.get('/servers/:id/messages/:channelId', authRequired, requireMember, async (
   const channelId = parseInt(req.params.channelId, 10);
   if (isNaN(channelId)) return res.status(400).json({ error: 'Channel ID invalide.' });
 
-  // Vérifie que le channel appartient bien à ce serveur
   const ch = await stmts.getServerChannelById(channelId);
   if (!ch || ch.server_id !== req.serverId) {
     return res.status(404).json({ error: 'Channel introuvable.' });
@@ -321,17 +335,54 @@ app.get('/servers/:id/messages/:channelId', authRequired, requireMember, async (
 
 // PATCH /servers/:id — modifier le serveur (admin/owner)
 app.patch('/servers/:id', authRequired, requireMember, requireAdmin, async (req, res) => {
-  const { name, color } = req.body;
+  const { name, color, icon_url, banner_url, description } = req.body;
   const updates = {};
   if (name?.trim()) {
     if (name.trim().length > 50) return res.status(400).json({ error: 'Nom trop long.' });
     updates.name = name.trim();
   }
   if (color) updates.color = color;
+
+  // icon_url — null clears it
+  if (icon_url !== undefined) {
+    if (icon_url) {
+      try {
+        const u = new URL(icon_url);
+        if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+      } catch {
+        return res.status(400).json({ error: 'URL d\'icône invalide.' });
+      }
+      updates.icon_url = icon_url;
+    } else {
+      updates.icon_url = null;
+    }
+  }
+
+  // banner_url — null clears it
+  if (banner_url !== undefined) {
+    if (banner_url) {
+      try {
+        const u = new URL(banner_url);
+        if (!['http:', 'https:'].includes(u.protocol)) throw new Error();
+      } catch {
+        return res.status(400).json({ error: 'URL de bannière invalide.' });
+      }
+      updates.banner_url = banner_url;
+    } else {
+      updates.banner_url = null;
+    }
+  }
+
+  if (description !== undefined) {
+    if (description && description.length > 120) {
+      return res.status(400).json({ error: 'Description trop longue (max 120 car.).' });
+    }
+    updates.description = description || null;
+  }
+
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'Rien à modifier.' });
 
   const updated = await stmts.updateServer(req.serverId, updates);
-  // Notifier les membres connectés
   io.to(`server:${req.serverId}`).emit('server_updated', { id: req.serverId, ...updates });
   res.json(updated);
 });
@@ -366,7 +417,6 @@ app.post('/servers/:id/channels', authRequired, requireMember, requireAdmin, asy
     return res.status(400).json({ error: 'Type de channel invalide.' });
   }
 
-  // Position = max existant + 1
   const existing = await stmts.getServerChannels(req.serverId);
   const position = existing.length;
 
@@ -378,22 +428,52 @@ app.post('/servers/:id/channels', authRequired, requireMember, requireAdmin, asy
     position,
   });
 
-  // Notifier les membres
   const channels = await stmts.getServerChannels(req.serverId);
   io.to(`server:${req.serverId}`).emit('channels_updated', { server_id: req.serverId, channels });
 
   res.status(201).json(ch);
 });
 
+// PATCH /servers/:id/channels/:channelId — modifier un channel (topic, nom, etc.)
+app.patch('/servers/:id/channels/:channelId', authRequired, requireMember, requireAdmin, async (req, res) => {
+  const channelId = parseInt(req.params.channelId, 10);
+  if (isNaN(channelId)) return res.status(400).json({ error: 'Channel ID invalide.' });
+
+  const ch = await stmts.getServerChannelById(channelId);
+  if (!ch || ch.server_id !== req.serverId) {
+    return res.status(404).json({ error: 'Channel introuvable.' });
+  }
+
+  const { name, topic, category } = req.body;
+  const updates = {};
+  if (name !== undefined) {
+    if (!name?.trim()) return res.status(400).json({ error: 'Nom requis.' });
+    if (name.trim().length > 32) return res.status(400).json({ error: 'Nom trop long.' });
+    updates.name = name.trim();
+  }
+  if (topic !== undefined) {
+    if (topic && topic.length > 80) return res.status(400).json({ error: 'Sujet trop long (max 80 car.).' });
+    updates.topic = topic || null;
+  }
+  if (category !== undefined) {
+    updates.category = category?.trim() || 'Général';
+  }
+
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'Rien à modifier.' });
+
+  const updated = await stmts.updateServerChannel(channelId, updates);
+  const channels = await stmts.getServerChannels(req.serverId);
+  io.to(`server:${req.serverId}`).emit('channels_updated', { server_id: req.serverId, channels });
+  res.json(updated);
+});
+
 // POST /servers/:id/channels/reorder — réordonner les channels (admin/owner)
-// Body: [{ id, position, category }]
 app.post('/servers/:id/channels/reorder', authRequired, requireMember, requireAdmin, async (req, res) => {
-  const { order } = req.body; // [{ id: number, position: number, category: string }]
+  const { order } = req.body;
   if (!Array.isArray(order) || !order.length) {
     return res.status(400).json({ error: 'Tableau "order" requis.' });
   }
 
-  // Valider que tous les channels appartiennent bien à ce serveur
   const existing = await stmts.getServerChannels(req.serverId);
   const existingIds = new Set(existing.map(c => c.id));
 
@@ -407,7 +487,6 @@ app.post('/servers/:id/channels/reorder', authRequired, requireMember, requireAd
     }
   }
 
-  // Appliquer les mises à jour
   for (const item of order) {
     await stmts.updateServerChannel(parseInt(item.id, 10), {
       position: item.position,
@@ -430,7 +509,6 @@ app.delete('/servers/:id/channels/:channelId', authRequired, requireMember, requ
     return res.status(404).json({ error: 'Channel introuvable.' });
   }
 
-  // Garder au minimum 1 channel
   const all = await stmts.getServerChannels(req.serverId);
   if (all.length <= 1) return res.status(400).json({ error: 'Impossible de supprimer le dernier channel.' });
 
@@ -442,9 +520,121 @@ app.delete('/servers/:id/channels/:channelId', authRequired, requireMember, requ
   res.json({ success: true });
 });
 
+// ─── Rôles personnalisés ─────────────────────────────────────────────────────
+
+// GET /servers/:id/roles
+app.get('/servers/:id/roles', authRequired, requireMember, async (req, res) => {
+  const roles = await stmts.getServerRoles(req.serverId);
+  res.json(roles);
+});
+
+// PUT /servers/:id/roles/:roleKey — créer/mettre à jour un rôle (admin/owner)
+app.put('/servers/:id/roles/:roleKey', authRequired, requireMember, requireAdmin, async (req, res) => {
+  const { roleKey } = req.params;
+  if (!['moderator', 'vip', 'member'].includes(roleKey)) {
+    return res.status(400).json({ error: 'Rôle non modifiable.' });
+  }
+  const { label, color, icon } = req.body;
+  if (label && label.length > 20) return res.status(400).json({ error: 'Label trop long.' });
+  if (icon && icon.length > 2) return res.status(400).json({ error: 'Icône trop longue (max 2 car.).' });
+
+  const role = await stmts.upsertServerRole(req.serverId, roleKey, { label, color, icon });
+  // Notifier les membres
+  io.to(`server:${req.serverId}`).emit('roles_updated', { server_id: req.serverId });
+  res.json(role);
+});
+
+// ─── Gestion des membres du serveur ─────────────────────────────────────────
+
+// PATCH /servers/:id/members/:discordId/role — changer le rôle d'un membre
+app.patch('/servers/:id/members/:discordId/role', authRequired, requireMember, requireAdmin, async (req, res) => {
+  const { discordId } = req.params;
+  const { role } = req.body;
+
+  const VALID_ROLES = ['owner', 'admin', 'moderator', 'vip', 'member'];
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Rôle invalide.' });
+  }
+
+  const target = await stmts.getServerMember({ server_id: req.serverId, discord_id: discordId });
+  if (!target) return res.status(404).json({ error: 'Membre introuvable.' });
+
+  // Règles de permissions
+  const myRole = req.member.role;
+  if (target.role === 'owner') return res.status(403).json({ error: 'Impossible de modifier le rôle du propriétaire.' });
+  if (myRole === 'admin' && target.role === 'admin') {
+    return res.status(403).json({ error: 'Un admin ne peut pas modifier le rôle d\'un autre admin.' });
+  }
+  if (role === 'owner' && myRole !== 'owner') {
+    return res.status(403).json({ error: 'Seul le propriétaire peut transférer la propriété.' });
+  }
+
+  await stmts.updateServerMemberRole({ server_id: req.serverId, discord_id: discordId, role });
+
+  const members = await stmts.getServerMembers(req.serverId);
+  io.to(`server:${req.serverId}`).emit('server_members_update', { server_id: req.serverId, members });
+  res.json({ success: true });
+});
+
+// PATCH /servers/:id/members/:discordId/nickname — changer le surnom serveur
+app.patch('/servers/:id/members/:discordId/nickname', authRequired, requireMember, async (req, res) => {
+  const { discordId } = req.params;
+  const { nickname } = req.body;
+
+  const isSelf = String(discordId) === String(req.user.discord_id);
+  const isAdmin = ['owner', 'admin'].includes(req.member.role);
+
+  if (!isSelf && !isAdmin) {
+    return res.status(403).json({ error: 'Permissions insuffisantes.' });
+  }
+
+  if (nickname && nickname.length > 32) {
+    return res.status(400).json({ error: 'Surnom trop long (max 32 car.).' });
+  }
+
+  const target = await stmts.getServerMember({ server_id: req.serverId, discord_id: discordId });
+  if (!target) return res.status(404).json({ error: 'Membre introuvable.' });
+
+  await stmts.updateServerMemberNickname({
+    server_id: req.serverId,
+    discord_id: discordId,
+    server_nickname: nickname || null,
+  });
+
+  const members = await stmts.getServerMembers(req.serverId);
+  io.to(`server:${req.serverId}`).emit('server_members_update', { server_id: req.serverId, members });
+  res.json({ success: true });
+});
+
+// DELETE /servers/:id/members/:discordId — kick un membre (admin/owner)
+app.delete('/servers/:id/members/:discordId', authRequired, requireMember, requireAdmin, async (req, res) => {
+  const { discordId } = req.params;
+
+  if (String(discordId) === String(req.user.discord_id)) {
+    return res.status(400).json({ error: 'Vous ne pouvez pas vous exclure vous-même.' });
+  }
+
+  const target = await stmts.getServerMember({ server_id: req.serverId, discord_id: discordId });
+  if (!target) return res.status(404).json({ error: 'Membre introuvable.' });
+
+  if (target.role === 'owner') {
+    return res.status(403).json({ error: 'Impossible d\'exclure le propriétaire.' });
+  }
+  if (req.member.role === 'admin' && target.role === 'admin') {
+    return res.status(403).json({ error: 'Un admin ne peut pas exclure un autre admin.' });
+  }
+
+  await stmts.removeServerMember({ server_id: req.serverId, discord_id: discordId });
+
+  const members = await stmts.getServerMembers(req.serverId);
+  io.to(`server:${req.serverId}`).emit('server_members_update', { server_id: req.serverId, members });
+  // Notify kicked user
+  io.to(`server:${req.serverId}`).emit('member_kicked', { discord_id: discordId, server_id: req.serverId });
+  res.json({ success: true });
+});
+
 // ─── Invitations ─────────────────────────────────────────────────────────────
 
-// GET /invite/:code — preview de l'invitation (sans rejoindre)
 app.get('/invite/:code', authRequired, async (req, res) => {
   const srv = await stmts.getServerByInviteCode(req.params.code);
   if (!srv) return res.status(404).json({ error: 'Code d\'invitation invalide ou expiré.' });
@@ -453,15 +643,15 @@ app.get('/invite/:code', authRequired, async (req, res) => {
   const alreadyMember = await stmts.isServerMember({ server_id: srv.id, discord_id: req.user.discord_id });
 
   res.json({
-    id:            srv.id,
-    name:          srv.name,
-    color:         srv.color,
-    member_count:  memberCount,
+    id:             srv.id,
+    name:           srv.name,
+    color:          srv.color,
+    icon_url:       srv.icon_url || null,
+    member_count:   memberCount,
     already_member: alreadyMember,
   });
 });
 
-// POST /invite/:code — rejoindre le serveur via invitation
 app.post('/invite/:code', authRequired, async (req, res) => {
   const srv = await stmts.getServerByInviteCode(req.params.code);
   if (!srv) return res.status(404).json({ error: 'Code d\'invitation invalide ou expiré.' });
@@ -471,7 +661,6 @@ app.post('/invite/:code', authRequired, async (req, res) => {
 
   await stmts.addServerMember({ server_id: srv.id, discord_id: req.user.discord_id, role: 'member' });
 
-  // Notifier les membres du serveur
   const members = await stmts.getServerMembers(srv.id);
   io.to(`server:${srv.id}`).emit('server_members_update', { server_id: srv.id, members });
 
@@ -481,7 +670,6 @@ app.post('/invite/:code', authRequired, async (req, res) => {
 
 // ─── DM Routes ───────────────────────────────────────────────────────────────
 
-// GET /users/search?q=xxx — recherche d'utilisateurs
 app.get('/users/search', authRequired, async (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q || q.length < 2) return res.json([]);
@@ -489,13 +677,11 @@ app.get('/users/search', authRequired, async (req, res) => {
   res.json(users);
 });
 
-// GET /dm/conversations — liste des conversations DM
 app.get('/dm/conversations', authRequired, async (req, res) => {
   const convs = await stmts.getDmConversations(req.user.discord_id);
   res.json(convs);
 });
 
-// GET /dm/:otherDiscordId — historique d'une conversation
 app.get('/dm/:otherDiscordId', authRequired, async (req, res) => {
   const roomKey = stmts.dmRoomKey(req.user.discord_id, req.params.otherDiscordId);
   const msgs = await stmts.getDmMessages(roomKey);
@@ -512,14 +698,12 @@ io.on('connection', async (socket) => {
   socket.user = user;
   console.log(`[WS] ${user.username} connecté`);
 
-  // Mettre à jour la liste des membres (serveur par défaut)
   const { data: allMembers } = await supabase
     .from('users')
-    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
+    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, status_text, created_at')
     .order('username');
   io.emit('members_update', allMembers || []);
 
-  // Rejoindre un serveur (pour recevoir les events server_updated, members_update, etc.)
   socket.on('join_server', async ({ serverId }) => {
     if (!serverId) return;
     const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
@@ -527,17 +711,12 @@ io.on('connection', async (socket) => {
     socket.join(`server:${serverId}`);
   });
 
-  // Rejoindre un channel
-  // Accepte { serverId, channelId } pour les serveurs utilisateur
-  // ou une string pour le serveur par défaut (rétrocompatibilité)
   socket.on('join_channel', (payload) => {
-    // Quitter les rooms précédentes (sauf server:* et socket.id)
     Array.from(socket.rooms).forEach(room => {
       if (room !== socket.id && !room.startsWith('server:')) socket.leave(room);
     });
 
     if (typeof payload === 'string') {
-      // Serveur par défaut
       socket.join(payload);
     } else {
       const { serverId, channelId } = payload;
@@ -545,14 +724,11 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Rejoin après reconnexion — le client renvoie son état courant
   socket.on('rejoin', async ({ serverId, channelId }) => {
-    // Rejoindre le server room si besoin
     if (serverId) {
       const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
       if (isMember) socket.join(`server:${serverId}`);
     }
-    // Rejoindre le channel room
     if (channelId) {
       Array.from(socket.rooms).forEach(room => {
         if (room !== socket.id && !room.startsWith('server:')) socket.leave(room);
@@ -565,22 +741,18 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Envoyer un message
   socket.on('send_message', async (payload) => {
     if (!payload?.content?.trim()) return;
 
     const { content, serverId, channelId } = payload;
 
     if (serverId && channelId) {
-      // Message dans un serveur utilisateur
       const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
       if (!isMember) return;
 
       const ch = await stmts.getServerChannelById(channelId);
       if (!ch || ch.server_id !== serverId) return;
-      // rules = lecture seule pour tous
       if (ch.type === 'rules') return;
-      // announcement = lecture seule sauf owner/admin
       if (ch.type === 'announcement') {
         const member = await stmts.getServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
         if (!member || !['owner', 'admin'].includes(member.role)) return;
@@ -595,7 +767,6 @@ io.on('connection', async (socket) => {
       });
       if (msg) io.to(`${serverId}:${channelId}`).emit('new_message', msg);
     } else if (payload.channelId) {
-      // Message dans le serveur par défaut
       const { channelId: defChId } = payload;
       const { data } = await supabase
         .from('messages')
@@ -629,7 +800,6 @@ io.on('connection', async (socket) => {
       serverId: serverId || null,
     });
 
-    // Auto-stop après 4s sans typing_stop
     if (!socket._typingTimers) socket._typingTimers = {};
     clearTimeout(socket._typingTimers[roomKey]);
     socket._typingTimers[roomKey] = setTimeout(() => {
@@ -659,7 +829,6 @@ io.on('connection', async (socket) => {
   socket.on('join_dm', async ({ otherDiscordId }) => {
     if (!otherDiscordId) return;
     const roomKey = stmts.dmRoomKey(socket.user.discord_id, otherDiscordId);
-    // Quitter les rooms DM précédentes
     Array.from(socket.rooms).forEach(room => {
       if (room.startsWith('dm:')) socket.leave(room);
     });
@@ -676,10 +845,7 @@ io.on('connection', async (socket) => {
       content:    content.trim(),
     });
     if (!msg) return;
-    // Émettre aux deux (l'expéditeur aussi pour confirmation)
     io.to(`dm:${roomKey}`).emit('new_dm', { ...msg, otherDiscordId });
-    // Si le destinataire n'est pas dans la room DM (pas en vue DM),
-    // on lui envoie quand même via son socket personnel
     const otherSockets = await io.fetchSockets();
     for (const s of otherSockets) {
       if (s.user?.discord_id === String(otherDiscordId) && !s.rooms.has(`dm:${roomKey}`)) {
@@ -713,7 +879,6 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    // Stopper tous les typing en cours
     if (socket._typingTimers) {
       Object.keys(socket._typingTimers).forEach(roomKey => {
         clearTimeout(socket._typingTimers[roomKey]);
@@ -727,7 +892,7 @@ io.on('connection', async (socket) => {
     console.log(`[WS] ${socket.user?.username} déconnecté`);
     const { data: allMembers } = await supabase
       .from('users')
-      .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
+      .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, status_text, created_at')
       .order('username');
     io.emit('members_update', allMembers || []);
   });
