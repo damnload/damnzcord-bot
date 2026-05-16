@@ -237,13 +237,19 @@ app.get('/members', authRequired, async (req, res) => {
 
 app.get('/messages/:channelId', authRequired, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
-  const { data } = await supabase
+  const since = req.query.since ? parseInt(req.query.since, 10) : null;
+
+  let query = supabase
     .from('messages')
     .select('*')
     .eq('channel_id', req.params.channelId)
     .is('server_id', null)
     .order('created_at', { ascending: true })
     .limit(limit);
+
+  if (since && !isNaN(since)) query = query.gt('id', since);
+
+  const { data } = await query;
   res.json(data || []);
 });
 
@@ -329,7 +335,8 @@ app.get('/servers/:id/messages/:channelId', authRequired, requireMember, async (
     return res.status(404).json({ error: 'Channel introuvable.' });
   }
 
-  const msgs = await stmts.getServerMessages({ server_id: req.serverId, channel_id: channelId });
+  const since = req.query.since ? parseInt(req.query.since, 10) : null;
+  const msgs = await stmts.getServerMessages({ server_id: req.serverId, channel_id: channelId, since });
   res.json(msgs);
 });
 
