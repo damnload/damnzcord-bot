@@ -281,6 +281,79 @@ const stmts = {
     return data || null;
   },
 
+  // ─── Messages Privés (DM) ────────────────────────────────────────────────────
+
+  dmRoomKey(id1, id2) {
+    return [String(id1), String(id2)].sort().join(':');
+  },
+
+  async getDmMessages(roomKey) {
+    const { data } = await supabase
+      .from('dm_messages')
+      .select('*')
+      .eq('room', roomKey)
+      .order('created_at', { ascending: true })
+      .limit(50);
+    return data || [];
+  },
+
+  async saveDmMessage({ room, discord_id, username, content }) {
+    const { data } = await supabase
+      .from('dm_messages')
+      .insert({ room, discord_id, username, content })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async getDmConversations(discord_id) {
+    const id = String(discord_id);
+    const { data } = await supabase
+      .from('dm_messages')
+      .select('room, username, discord_id, created_at, content')
+      .or(`room.like.${id}:%,room.like.%:${id}`)
+      .order('created_at', { ascending: false });
+
+    if (!data) return [];
+
+    // Dédupliquer par room, garder le message le plus récent
+    const seen = new Map();
+    for (const row of data) {
+      if (!seen.has(row.room)) seen.set(row.room, row);
+    }
+
+    const convs = [];
+    for (const [room, lastMsg] of seen) {
+      const [a, b] = room.split(':');
+      const otherId = a === id ? b : a;
+      const other = await supabase
+        .from('users')
+        .select('discord_id, username, avatar_url, display_name')
+        .eq('discord_id', otherId)
+        .single();
+      if (other.data) {
+        convs.push({
+          room,
+          other: other.data,
+          last_message: lastMsg.content,
+          last_at: lastMsg.created_at,
+        });
+      }
+    }
+    return convs;
+  },
+
+  async searchUsers(query, excludeDiscordId) {
+    const { data } = await supabase
+      .from('users')
+      .select('discord_id, username, avatar_url, display_name')
+      .ilike('username', `%${query}%`)
+      .neq('discord_id', excludeDiscordId)
+      .limit(10);
+    return data || [];
+  },
+
+
 };
 
 module.exports = { supabase, stmts };
