@@ -60,12 +60,14 @@ const stmts = {
       .eq('discord_id', discord_id);
   },
 
-  async updateProfile({ discord_id, display_name, nickname, bio, banner_url }) {
+  async updateProfile({ discord_id, display_name, nickname, bio, banner_url, status_text }) {
     const updates = {};
-    if (display_name !== undefined) updates.display_name = display_name;
+    if (display_name  !== undefined) updates.display_name  = display_name;
     if (nickname      !== undefined) updates.nickname      = nickname;
     if (bio           !== undefined) updates.bio           = bio;
     if (banner_url    !== undefined) updates.banner_url    = banner_url;
+    if (status_text   !== undefined) updates.status_text   = status_text;
+    if (!Object.keys(updates).length) return;
     await supabase
       .from('users')
       .update(updates)
@@ -94,7 +96,8 @@ const stmts = {
       .select(`
         role,
         servers (
-          id, name, color, invite_code, owner_id, created_at
+          id, name, color, invite_code, owner_id, created_at,
+          icon_url, banner_url, description
         )
       `)
       .eq('discord_id', discord_id);
@@ -149,22 +152,24 @@ const stmts = {
     const { data } = await supabase
       .from('server_members')
       .select(`
-        discord_id, role, joined_at,
-        users (username, avatar_url, display_name, nickname, bio, banner_url)
+        discord_id, role, joined_at, server_nickname,
+        users (username, avatar_url, display_name, nickname, bio, banner_url, status_text)
       `)
       .eq('server_id', server_id)
       .order('joined_at', { ascending: true });
     if (!data) return [];
     return data.map(row => ({
-      discord_id:   row.discord_id,
-      role:         row.role,
-      joined_at:    row.joined_at,
-      username:     row.users?.username,
-      avatar_url:   row.users?.avatar_url,
-      display_name: row.users?.display_name,
-      nickname:     row.users?.nickname,
-      bio:          row.users?.bio,
-      banner_url:   row.users?.banner_url,
+      discord_id:      row.discord_id,
+      role:            row.role,
+      joined_at:       row.joined_at,
+      server_nickname: row.server_nickname || null,
+      username:        row.users?.username,
+      avatar_url:      row.users?.avatar_url,
+      display_name:    row.users?.display_name,
+      nickname:        row.users?.nickname,
+      bio:             row.users?.bio,
+      banner_url:      row.users?.banner_url,
+      status_text:     row.users?.status_text,
     }));
   },
 
@@ -208,6 +213,36 @@ const stmts = {
       .update({ role })
       .eq('server_id', server_id)
       .eq('discord_id', discord_id);
+  },
+
+  async updateServerMemberNickname({ server_id, discord_id, server_nickname }) {
+    await supabase
+      .from('server_members')
+      .update({ server_nickname: server_nickname || null })
+      .eq('server_id', server_id)
+      .eq('discord_id', discord_id);
+  },
+
+  // ─── Rôles personnalisés des serveurs ────────────────────────────────────────
+
+  async getServerRoles(server_id) {
+    const { data } = await supabase
+      .from('server_roles')
+      .select('*')
+      .eq('server_id', server_id);
+    return data || [];
+  },
+
+  async upsertServerRole(server_id, role_key, { label, color, icon }) {
+    const { data } = await supabase
+      .from('server_roles')
+      .upsert(
+        { server_id, role_key, label: label || '', color: color || '#7a7490', icon: icon || null },
+        { onConflict: 'server_id,role_key' }
+      )
+      .select()
+      .single();
+    return data || null;
   },
 
   // ─── Channels des serveurs ───────────────────────────────────────────────────
@@ -316,7 +351,6 @@ const stmts = {
 
     if (!data) return [];
 
-    // Dédupliquer par room, garder le message le plus récent
     const seen = new Map();
     for (const row of data) {
       if (!seen.has(row.room)) seen.set(row.room, row);
@@ -352,7 +386,6 @@ const stmts = {
       .limit(10);
     return data || [];
   },
-
 
 };
 
