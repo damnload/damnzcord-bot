@@ -221,13 +221,14 @@ app.get('/members', authRequired, async (req, res) => {
 });
 
 app.get('/messages/:channelId', authRequired, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
   const { data } = await supabase
     .from('messages')
     .select('*')
     .eq('channel_id', req.params.channelId)
     .is('server_id', null)
     .order('created_at', { ascending: true })
-    .limit(50);
+    .limit(limit);
   res.json(data || []);
 });
 
@@ -490,7 +491,7 @@ io.on('connection', async (socket) => {
   // Mettre à jour la liste des membres (serveur par défaut)
   const { data: allMembers } = await supabase
     .from('users')
-    .select('discord_id, username, avatar_url')
+    .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
     .order('username');
   io.emit('members_update', allMembers || []);
 
@@ -517,6 +518,26 @@ io.on('connection', async (socket) => {
     } else {
       const { serverId, channelId } = payload;
       socket.join(`${serverId}:${channelId}`);
+    }
+  });
+
+  // Rejoin après reconnexion — le client renvoie son état courant
+  socket.on('rejoin', async ({ serverId, channelId }) => {
+    // Rejoindre le server room si besoin
+    if (serverId) {
+      const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
+      if (isMember) socket.join(`server:${serverId}`);
+    }
+    // Rejoindre le channel room
+    if (channelId) {
+      Array.from(socket.rooms).forEach(room => {
+        if (room !== socket.id && !room.startsWith('server:')) socket.leave(room);
+      });
+      if (serverId) {
+        socket.join(`${serverId}:${channelId}`);
+      } else {
+        socket.join(String(channelId));
+      }
     }
   });
 
@@ -623,7 +644,7 @@ io.on('connection', async (socket) => {
     console.log(`[WS] ${socket.user?.username} déconnecté`);
     const { data: allMembers } = await supabase
       .from('users')
-      .select('discord_id, username, avatar_url')
+      .select('discord_id, username, avatar_url, display_name, nickname, bio, banner_url, created_at')
       .order('username');
     io.emit('members_update', allMembers || []);
   });
