@@ -62,16 +62,13 @@ const stmts = {
 
   async updateProfile({ discord_id, display_name, nickname, bio, banner_url, status_text }) {
     const updates = {};
-    if (display_name  !== undefined) updates.display_name  = display_name;
-    if (nickname      !== undefined) updates.nickname      = nickname;
-    if (bio           !== undefined) updates.bio           = bio;
-    if (banner_url    !== undefined) updates.banner_url    = banner_url;
-    if (status_text   !== undefined) updates.status_text   = status_text;
+    if (display_name !== undefined) updates.display_name = display_name;
+    if (nickname     !== undefined) updates.nickname     = nickname;
+    if (bio          !== undefined) updates.bio          = bio;
+    if (banner_url   !== undefined) updates.banner_url   = banner_url;
+    if (status_text  !== undefined) updates.status_text  = status_text;
     if (!Object.keys(updates).length) return;
-    await supabase
-      .from('users')
-      .update(updates)
-      .eq('discord_id', discord_id);
+    await supabase.from('users').update(updates).eq('discord_id', discord_id);
   },
 
   async updateLastLogin({ discord_id }) {
@@ -88,6 +85,16 @@ const stmts = {
     return { total: count || 0 };
   },
 
+  async searchUsers(query, excludeDiscordId) {
+    const { data } = await supabase
+      .from('users')
+      .select('discord_id, username, avatar_url, display_name')
+      .ilike('username', `%${query}%`)
+      .neq('discord_id', excludeDiscordId)
+      .limit(10);
+    return data || [];
+  },
+
   // ─── Serveurs ────────────────────────────────────────────────────────────────
 
   async getUserServers(discord_id) {
@@ -97,7 +104,9 @@ const stmts = {
         role,
         servers (
           id, name, color, invite_code, owner_id, created_at,
-          icon_url, banner_url, description
+          icon_url, banner_url, description, tag, subject, vibe, language,
+          access_mode, welcome_enabled, welcome_channel_id, welcome_message,
+          auto_role_id, rules, rules_required, block_links, word_filter, banned_words
         )
       `)
       .eq('discord_id', discord_id);
@@ -153,7 +162,7 @@ const stmts = {
       .from('server_members')
       .select(`
         discord_id, role, joined_at, server_nickname,
-        users (username, avatar_url, display_name, nickname, bio, banner_url, status_text)
+        users (username, avatar_url, display_name, nickname, bio, banner_url, status_text, created_at)
       `)
       .eq('server_id', server_id)
       .order('joined_at', { ascending: true });
@@ -170,6 +179,7 @@ const stmts = {
       bio:             row.users?.bio,
       banner_url:      row.users?.banner_url,
       status_text:     row.users?.status_text,
+      created_at:      row.users?.created_at,
     }));
   },
 
@@ -194,9 +204,7 @@ const stmts = {
   },
 
   async addServerMember({ server_id, discord_id, role = 'member' }) {
-    await supabase
-      .from('server_members')
-      .insert({ server_id, discord_id, role });
+    await supabase.from('server_members').insert({ server_id, discord_id, role });
   },
 
   async removeServerMember({ server_id, discord_id }) {
@@ -223,26 +231,76 @@ const stmts = {
       .eq('discord_id', discord_id);
   },
 
-  // ─── Rôles personnalisés des serveurs ────────────────────────────────────────
+  // ─── Rôles personnalisés ─────────────────────────────────────────────────────
 
   async getServerRoles(server_id) {
     const { data } = await supabase
       .from('server_roles')
       .select('*')
-      .eq('server_id', server_id);
+      .eq('server_id', server_id)
+      .order('position', { ascending: true });
     return data || [];
   },
 
-  async upsertServerRole(server_id, role_key, { label, color, icon }) {
+  // Ancien upsert (3 rôles fixes) — conservé pour compat
+  async upsertServerRole(server_id, role_key, { label, color, icon, hoisted, mentionable, permissions }) {
     const { data } = await supabase
       .from('server_roles')
       .upsert(
-        { server_id, role_key, label: label || '', color: color || '#7a7490', icon: icon || null },
+        {
+          server_id,
+          role_key,
+          label:       label       || '',
+          color:       color       || '#7a7490',
+          icon:        icon        || null,
+          hoisted:     !!hoisted,
+          mentionable: !!mentionable,
+          permissions: permissions || {},
+        },
         { onConflict: 'server_id,role_key' }
       )
       .select()
       .single();
     return data || null;
+  },
+
+  async createServerRole(server_id, { role_key, label, color, icon }) {
+    const { data } = await supabase
+      .from('server_roles')
+      .insert({ server_id, role_key, label: label || '', color: color || '#7a7490', icon: icon || null })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async updateServerRole(server_id, role_key, updates) {
+    const { data } = await supabase
+      .from('server_roles')
+      .update(updates)
+      .eq('server_id', server_id)
+      .eq('role_key', role_key)
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServerRole(server_id, role_key) {
+    await supabase
+      .from('server_roles')
+      .delete()
+      .eq('server_id', server_id)
+      .eq('role_key', role_key);
+  },
+
+  async reorderServerRoles(server_id, order) {
+    // order = [{ role_key, position }]
+    for (const { role_key, position } of order) {
+      await supabase
+        .from('server_roles')
+        .update({ position })
+        .eq('server_id', server_id)
+        .eq('role_key', role_key);
+    }
   },
 
   // ─── Channels des serveurs ───────────────────────────────────────────────────
@@ -306,16 +364,177 @@ const stmts = {
   async saveServerMessage({ server_id, channel_id, discord_id, username, content }) {
     const { data } = await supabase
       .from('messages')
+      .insert({ server_id, channel_id: String(channel_id), discord_id, username, content })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServerMessage(id) {
+    const { data } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', id)
+      .select()
+      .single();
+    return data || null;
+  },
+
+  // ─── Invitations ─────────────────────────────────────────────────────────────
+
+  async getServerInvites(server_id) {
+    const { data } = await supabase
+      .from('server_invites')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('created_at', { ascending: false });
+    return data || [];
+  },
+
+  async createServerInvite({ server_id, code, creator_id, creator_username, max_uses, expires_at }) {
+    const { data } = await supabase
+      .from('server_invites')
+      .insert({ server_id, code, creator_id, creator_username, max_uses: max_uses || 0, expires_at: expires_at || null })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServerInvite(server_id, code) {
+    await supabase
+      .from('server_invites')
+      .delete()
+      .eq('server_id', server_id)
+      .eq('code', code);
+  },
+
+  async incrementInviteUse(code) {
+    // Incrémente use_count via RPC ou update manuel
+    const { data } = await supabase
+      .from('server_invites')
+      .select('use_count')
+      .eq('code', code)
+      .single();
+    if (data) {
+      await supabase
+        .from('server_invites')
+        .update({ use_count: (data.use_count || 0) + 1 })
+        .eq('code', code);
+    }
+  },
+
+  // ─── Bans & Kicks ────────────────────────────────────────────────────────────
+
+  async getServerBans(server_id) {
+    const { data } = await supabase
+      .from('server_bans')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('banned_at', { ascending: false });
+    return data || [];
+  },
+
+  async createBan({ server_id, user_id, username, reason, banned_by, expires_at, is_kick }) {
+    const { data } = await supabase
+      .from('server_bans')
       .insert({
         server_id,
-        channel_id: String(channel_id),
-        discord_id,
-        username,
-        content,
+        user_id,
+        username:   username   || null,
+        reason:     reason     || null,
+        banned_by:  banned_by  || null,
+        expires_at: expires_at || null,
+        is_kick:    !!is_kick,
       })
       .select()
       .single();
     return data || null;
+  },
+
+  async deleteBan(server_id, user_id) {
+    await supabase
+      .from('server_bans')
+      .delete()
+      .eq('server_id', server_id)
+      .eq('user_id', user_id)
+      .eq('is_kick', false);
+  },
+
+  async isBanned(server_id, discord_id) {
+    const now = new Date().toISOString();
+    const { data } = await supabase
+      .from('server_bans')
+      .select('id')
+      .eq('server_id', server_id)
+      .eq('user_id', discord_id)
+      .eq('is_kick', false)
+      .or(`expires_at.is.null,expires_at.gt.${now}`)
+      .single();
+    return !!data;
+  },
+
+  // ─── Stickers ────────────────────────────────────────────────────────────────
+
+  async getServerStickers(server_id) {
+    const { data } = await supabase
+      .from('server_stickers')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('created_at', { ascending: false });
+    return data || [];
+  },
+
+  async createServerSticker({ server_id, name, description, url, uploader_id }) {
+    const { data } = await supabase
+      .from('server_stickers')
+      .insert({ server_id, name, description: description || null, url, uploader_id: uploader_id || null })
+      .select()
+      .single();
+    return data || null;
+  },
+
+  async deleteServerSticker(id, server_id) {
+    const { data } = await supabase
+      .from('server_stickers')
+      .delete()
+      .eq('id', id)
+      .eq('server_id', server_id)
+      .select('url')
+      .single();
+    return data || null;
+  },
+
+  // ─── Logs ────────────────────────────────────────────────────────────────────
+
+  async createLog({ server_id, type, description, actor_id, actor_username, target_id, metadata }) {
+    await supabase
+      .from('server_logs')
+      .insert({
+        server_id,
+        type,
+        description,
+        actor_id:       actor_id       || null,
+        actor_username: actor_username || null,
+        target_id:      target_id      || null,
+        metadata:       metadata       || {},
+      });
+  },
+
+  async getServerLogs({ server_id, types, limit, offset }) {
+    let query = supabase
+      .from('server_logs')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('created_at', { ascending: false })
+      .limit(limit || 100)
+      .range(offset || 0, (offset || 0) + (limit || 100) - 1);
+
+    if (types && types.length) {
+      query = query.in('type', types);
+    }
+
+    const { data } = await query;
+    return data || [];
   },
 
   // ─── Messages Privés (DM) ────────────────────────────────────────────────────
@@ -370,23 +589,13 @@ const stmts = {
       if (other.data) {
         convs.push({
           room,
-          other: other.data,
+          other:        other.data,
           last_message: lastMsg.content,
-          last_at: lastMsg.created_at,
+          last_at:      lastMsg.created_at,
         });
       }
     }
     return convs;
-  },
-
-  async searchUsers(query, excludeDiscordId) {
-    const { data } = await supabase
-      .from('users')
-      .select('discord_id, username, avatar_url, display_name')
-      .ilike('username', `%${query}%`)
-      .neq('discord_id', excludeDiscordId)
-      .limit(10);
-    return data || [];
   },
 
 };
