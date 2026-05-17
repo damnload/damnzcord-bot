@@ -997,6 +997,24 @@ io.on('connection', async (socket) => {
     });
   });
 
+  // ── Screen sharing ───────────────────────────────────────────────────────────
+  socket.on('screen_share_start', ({ serverId, channelId }) => {
+    if (!socket._voiceRoom) return;
+    if (socket._voiceRoom.serverId !== serverId || socket._voiceRoom.channelId !== channelId) return;
+
+    socket.to(`voice:${serverId}:${channelId}`).emit('screen_share_started', {
+      socketId: socket.id,
+      username: socket.user.username,
+    });
+  });
+
+  socket.on('screen_share_stop', ({ serverId, channelId }) => {
+    if (!serverId || !channelId) return;
+    socket.to(`voice:${serverId}:${channelId}`).emit('screen_share_stopped', {
+      socketId: socket.id,
+    });
+  });
+
   // ── Disconnect ──────────────────────────────────────────────────────────────
   socket.on('disconnect', async () => {
     _leaveVoice(socket);
