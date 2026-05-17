@@ -420,7 +420,7 @@ app.post('/servers/:id/channels', authRequired, requireMember, requireAdmin, asy
   const { name, type = 'text', category = 'Général' } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Nom du channel requis.' });
   if (name.trim().length > 32) return res.status(400).json({ error: 'Nom trop long (32 caractères max).' });
-  if (!['text', 'announcement', 'rules'].includes(type)) {
+  if (!['text', 'announcement', 'rules', 'voice'].includes(type)) {
     return res.status(400).json({ error: 'Type de channel invalide.' });
   }
 
