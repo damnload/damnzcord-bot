@@ -697,6 +697,30 @@ app.get('/dm/:otherDiscordId', authRequired, async (req, res) => {
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 
+function _leaveVoice(socket) {
+  if (!socket._voiceRoom) return;
+  const { serverId, channelId } = socket._voiceRoom;
+  socket.leave(`voice:${serverId}:${channelId}`);
+  socket.to(`voice:${serverId}:${channelId}`).emit('voice_peer_left', { socketId: socket.id });
+  socket._voiceRoom = null;
+
+  // Mettre à jour voice_state pour tous dans le serveur
+  const roomKey = `voice:${serverId}:${channelId}`;
+  const roomMembers = io.sockets.adapter.rooms.get(roomKey) || new Set();
+  const participants = [];
+  for (const sid of roomMembers) {
+    const s = io.sockets.sockets.get(sid);
+    if (s?.user) participants.push({
+      socketId:   sid,
+      discord_id: s.user.discord_id,
+      username:   s.user.username,
+      avatar_url: s.user.avatar_url || null,
+      muted:      s._voiceMuted || false,
+    });
+  }
+  io.to(`server:${serverId}`).emit('voice_state', { channelId, participants });
+}
+
 io.on('connection', async (socket) => {
   const token = socket.handshake.auth?.token;
   const user  = verifyToken(token);
@@ -885,7 +909,97 @@ io.on('connection', async (socket) => {
     socket.to(`dm:${roomKey}`).emit('typing_stop_dm', { discord_id: socket.user.discord_id });
   });
 
+  // ── Voice events ────────────────────────────────────────────────────────────
+
+  socket.on('voice_join', async ({ serverId, channelId }) => {
+    // Vérifications
+    const isMember = await stmts.isServerMember({ server_id: serverId, discord_id: socket.user.discord_id });
+    if (!isMember) return;
+    const ch = await stmts.getServerChannelById(channelId);
+    if (!ch || ch.server_id !== serverId || ch.type !== 'voice') return;
+
+    // Si déjà dans un autre vocal, quitter d'abord
+    _leaveVoice(socket);
+
+    socket._voiceRoom    = { serverId, channelId };
+    socket._voiceMuted   = false;
+    const roomKey = `voice:${serverId}:${channelId}`;
+
+    // Collecter les pairs déjà présents AVANT de join
+    const existing = io.sockets.adapter.rooms.get(roomKey) || new Set();
+    const peers = [];
+    for (const sid of existing) {
+      const s = io.sockets.sockets.get(sid);
+      if (s?.user) peers.push({
+        socketId:   sid,
+        discord_id: s.user.discord_id,
+        username:   s.user.username,
+        avatar_url: s.user.avatar_url || null,
+        muted:      s._voiceMuted || false,
+      });
+    }
+
+    socket.join(roomKey);
+
+    // Envoyer la liste des pairs au nouvel arrivant
+    socket.emit('voice_peers', { peers });
+
+    // Notifier les autres
+    socket.to(roomKey).emit('voice_peer_joined', {
+      socketId:   socket.id,
+      discord_id: socket.user.discord_id,
+      username:   socket.user.username,
+      avatar_url: socket.user.avatar_url || null,
+      muted:      false,
+    });
+
+    // Mise à jour globale voice_state
+    const allInRoom = io.sockets.adapter.rooms.get(roomKey) || new Set();
+    const participants = [];
+    for (const sid of allInRoom) {
+      const s = io.sockets.sockets.get(sid);
+      if (s?.user) participants.push({
+        socketId:   sid,
+        discord_id: s.user.discord_id,
+        username:   s.user.username,
+        avatar_url: s.user.avatar_url || null,
+        muted:      s._voiceMuted || false,
+      });
+    }
+    io.to(`server:${serverId}`).emit('voice_state', { channelId, participants });
+  });
+
+  socket.on('voice_leave', () => { _leaveVoice(socket); });
+
+  socket.on('voice_offer', ({ targetSocketId, offer }) => {
+    io.to(targetSocketId).emit('voice_offer', {
+      fromSocketId: socket.id,
+      from: { discord_id: socket.user.discord_id, username: socket.user.username, avatar_url: socket.user.avatar_url || null },
+      offer,
+    });
+  });
+
+  socket.on('voice_answer', ({ targetSocketId, answer }) => {
+    io.to(targetSocketId).emit('voice_answer', { fromSocketId: socket.id, answer });
+  });
+
+  socket.on('voice_ice_candidate', ({ targetSocketId, candidate }) => {
+    io.to(targetSocketId).emit('voice_ice_candidate', { fromSocketId: socket.id, candidate });
+  });
+
+  socket.on('voice_mute', ({ muted }) => {
+    if (!socket._voiceRoom) return;
+    socket._voiceMuted = !!muted;
+    const { serverId, channelId } = socket._voiceRoom;
+    socket.to(`voice:${serverId}:${channelId}`).emit('voice_peer_muted', {
+      socketId: socket.id,
+      muted: !!muted,
+    });
+  });
+
+  // ── Disconnect ──────────────────────────────────────────────────────────────
   socket.on('disconnect', async () => {
+    _leaveVoice(socket);
     if (socket._typingTimers) {
       Object.keys(socket._typingTimers).forEach(roomKey => {
         clearTimeout(socket._typingTimers[roomKey]);
