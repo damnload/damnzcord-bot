@@ -603,22 +603,24 @@ app.get('/servers/:id/roles', authRequired, requireMember, async (req, res) => {
   res.json(roles);
 });
 
-// POST /servers/:id/roles — créer un nouveau rôle libre
+// POST /servers/:id/roles — créer un nouveau rôle libre (ou insérer un rôle système)
 app.post('/servers/:id/roles', authRequired, requireMember, requireAdmin, async (req, res) => {
-  const { label = 'Nouveau rôle', color = '#7a7490', icon = null } = req.body;
+  const { label = 'Nouveau rôle', color = '#7a7490', icon = null, role_key: explicitKey } = req.body;
   if (label.length > 20) return res.status(400).json({ error: 'Label trop long (max 20 car.).' });
 
-  // Générer un role_key unique
-  const base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '').slice(0, 20);
-  const role_key = `${base}_${Date.now().toString(36)}`;
+  // Si role_key explicite (rôle système passé depuis le client), l'utiliser directement
+  const role_key = explicitKey
+    ? explicitKey
+    : `${label.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'').slice(0,20)}_${Date.now().toString(36)}`;
 
-  const role = await stmts.createServerRole(req.serverId, { role_key, label, color, icon });
+  // Upsert pour éviter les doublons si le rôle système existe déjà
+  const role = await stmts.upsertServerRole(req.serverId, role_key, { label, color, icon, hoisted: false, mentionable: false, permissions: {} });
   await logAction(req.serverId, 'role_created', `Rôle "${label}" créé`, req.user.discord_id, req.user.username);
   io.to(`server:${req.serverId}`).emit('roles_updated', { server_id: req.serverId });
   res.status(201).json(role);
 });
 
-// PUT /servers/:id/roles/:roleKey — mettre à jour (label, color, icon, hoisted, mentionable, permissions)
+// PUT /servers/:id/roles/:roleKey — mettre à jour (upsert — crée si n'existe pas)
 app.put('/servers/:id/roles/:roleKey', authRequired, requireMember, requireAdmin, async (req, res) => {
   const { roleKey } = req.params;
   const { label, color, icon, hoisted, mentionable, permissions } = req.body;
@@ -626,16 +628,14 @@ app.put('/servers/:id/roles/:roleKey', authRequired, requireMember, requireAdmin
   if (label && label.length > 20) return res.status(400).json({ error: 'Label trop long (max 20 car.).' });
   if (icon  && icon.length  >  4) return res.status(400).json({ error: 'Icône trop longue.' });
 
-  const updates = {};
-  if (label       !== undefined) updates.label       = label;
-  if (color       !== undefined) updates.color       = color;
-  if (icon        !== undefined) updates.icon        = icon || null;
-  if (hoisted     !== undefined) updates.hoisted     = !!hoisted;
-  if (mentionable !== undefined) updates.mentionable = !!mentionable;
-  if (permissions !== undefined) updates.permissions = permissions;
-
-  const role = await stmts.updateServerRole(req.serverId, roleKey, updates);
-  if (!role) return res.status(404).json({ error: 'Rôle introuvable.' });
+  const role = await stmts.upsertServerRole(req.serverId, roleKey, {
+    label:       label       ?? roleKey,
+    color:       color       ?? '#7a7490',
+    icon:        icon        ?? null,
+    hoisted:     hoisted     !== undefined ? !!hoisted     : false,
+    mentionable: mentionable !== undefined ? !!mentionable : false,
+    permissions: permissions ?? {},
+  });
 
   await logAction(req.serverId, 'role_updated', `Rôle "${label || roleKey}" modifié`, req.user.discord_id, req.user.username);
   io.to(`server:${req.serverId}`).emit('roles_updated', { server_id: req.serverId });
